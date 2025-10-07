@@ -1,834 +1,1049 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
-using BinCalc;
 
 namespace Calculator
 {
-    /// <summary>
-    /// Логика взаимодействия для MainWindow.xaml
-    /// </summary>
     public partial class MainWindow : Window
     {
-        // Максимальное количество цифр, которое будет отображаться в метке памяти, не влияет на фактическое число, хранящееся в памяти
-        const int maxMemoryLabelLength = 6;
-        // Размер шрифта поля результата по умолчанию 
-        const int defaultFontSize = 48;
+        private enum CalculatorMode
+        {
+            Standard,
+            Programmer
+        }
 
-        // Истина, если выполняется математическая операция
-        bool operationCheck;
-        // Истинно, если во время другой математической операции над числом была вызвана функция (sin, tan, ln, log и т.д.)
-        bool functionCheck;
-        // Истина, если окно результата должно быть очищено при вводе числа
-        bool clearNext;
-        // Истина, если текст в поле результата является результатом какого-либо вычисления
-        bool isResult;
-        // Истина, если текст в поле результата не был изменен после щелчка на операторе
-        bool isOldText;
-        // Сохраняет число в памяти, доступ к которой осуществляется через MR
-        double memory = 0;
-        // Сохраняет текст в текстовом поле после выбора новой математической операции
-        string previousText;
-        // Тригонометрические режимы
-        enum trigModes
+        private enum BinaryOperation
         {
-            STANDARD,  //  Режим по умолчанию
-            HYPERBOLIC,
-            ARC
+            Add,
+            Subtract,
+            Multiply,
+            Divide,
+            Power
         }
-        // Сохраняет текущий тригонометрический режим
-        trigModes currentTrigMode;
-        // Символы для отображения на кнопке для различных режимов тригонометрии
-        Dictionary<trigModes, string> trigModeSymbols = new Dictionary<trigModes, string>()
+
+        private enum TrigMode
         {
-            { trigModes.STANDARD, "STD" },
-            { trigModes.ARC, "ARC" },
-            { trigModes.HYPERBOLIC, "HYP" }
+            Standard,
+            Hyperbolic,
+            Arc
+        }
+
+        private const double DefaultResultFontSize = 40;
+        private const double DefaultEquationFontSize = 22;
+        private const string OverflowMessage = "Переполнение";
+        private const string InvalidInputMessage = "Некорректный ввод";
+        private const string NotANumberMessage = "Не число";
+        private const string DivideByZeroMessage = "Деление на ноль";
+        private const int FactorialLimit = 170;
+
+        private readonly CultureInfo _culture = CultureInfo.CurrentCulture;
+        private readonly Dictionary<Angles.units, string> _angleUnitSymbols = new Dictionary<Angles.units, string>
+        {
+            { Angles.units.RADIANS, "RAD" },
+            { Angles.units.DEGREES, "DEG" },
+            { Angles.units.GRADIANS, "GRAD" }
         };
-        // Хранит текущую единицу измерения угла, по умолчанию это радианы
-        Angles.units angleUnit;
-        // Символы для отображения на кнопке для различных единиц измерения угла
-        Dictionary<Angles.units, string> angleUnitSymbols = new Dictionary<Angles.units, string>()
-            {
-                { Angles.units.RADIANS, "RAD" },
-                { Angles.units.DEGREES, "DEG" },
-                { Angles.units.GRADIANS, "GRAD" }
-            };
-        static string OVERFLOW = "Overflow";
-        static string INVALID_INPUT = "Invalid input";
-        static string NOT_A_NUMBER = "NaN";
-        bool click = true, ones = false;
-        string[] errors = { OVERFLOW, INVALID_INPUT, NOT_A_NUMBER };
-        operations currentOperation = operations.NULL;
-        // Математические операции, принимающие два операнда
-        enum operations
+
+        private readonly Dictionary<TrigMode, string> _trigModeSymbols = new Dictionary<TrigMode, string>
         {
-            ADDITION,
-            SUBTRACTION,
-            DIVISION,
-            MULTIPLICATION,
-            POWER,
-            NULL, // Представляет собой отсутствие операции (используется для сброса статуса)
-            BINARY_ADDITION,
-            BINARY_SUBTRACTION,
-            BINARY_MULTIPLICATION,
-            BINARY_DIVISION
-        }
+            { TrigMode.Standard, "STD" },
+            { TrigMode.Arc, "ARC" },
+            { TrigMode.Hyperbolic, "HYP" }
+        };
+
+        private readonly List<Button> _binaryRestrictedDigits;
+        private readonly List<Button> _disabledInProgrammer;
+
+        private string _decimalSeparator;
+        private CalculatorMode _mode = CalculatorMode.Standard;
+        private Angles.units _angleUnit = Angles.units.RADIANS;
+        private TrigMode _currentTrigMode = TrigMode.Standard;
+        private double _memory;
+
+        private double? _leftOperand;
+        private long? _binaryLeftOperand;
+        private BinaryOperation? _pendingOperation;
+        private string _pendingEquationPrefix = string.Empty;
+
+        private bool _clearOnNextDigit;
+        private bool _justEvaluated;
+        private bool _isTypingNumber;
 
         public MainWindow()
         {
             InitializeComponent();
-            angle_unit_button.Content = angleUnitSymbols[angleUnit];
-            trig_mode_button.Content = trigModeSymbols[currentTrigMode];
-        }
 
-        /// <summary>
-        /// Отображает заданный текст в поле результата и устанавливает значение параметра clearNext в true по умолчанию (false, если указано)
-        /// </summary>
-        private void showText(string text, bool clear=true)
-        {
-            try
+            _decimalSeparator = _culture.NumberFormat.NumberDecimalSeparator;
+            decimal_button.Content = _decimalSeparator;
+
+            _binaryRestrictedDigits = new List<Button>
             {
-                if (double.Parse(text) == 0)
-                    text = "0";
-            }
-            catch (Exception)
-            {
-                showError(INVALID_INPUT);
-                return;
-            }
-
-            if (text.Length > 30)
-                return;
-            if (text.Length > 12)
-                resultBox.FontSize = 25;
-            if (text.Length > 24)
-                resultBox.FontSize = 20;
-
-            clearNext = clear;
-            resultBox.Text = text;
-        }
-
-        /// <summary>
-        /// Отображает заданный текст в поле результата
-        /// </summary>
-        private void showError(string text)
-        {
-            resultBox.Text = text;
-            previousText = null;
-            operationCheck = false;
-            clearNext = true;
-            updateEquationBox("");
-            currentOperation = operations.NULL;
-            resetFontSize();
-        }
-
-        /// <summary>
-        /// Обновляет поле уравнения с заданной строкой уравнения.
-        /// Если append равен true, то заданный текст добавляется к существующему тексту в окне уравнения
-        /// </summary>
-        private void updateEquationBox(string equation, bool append=false)
-        {
-            // Удаляет бессмысленные десятичные знаки из чисел в уравнении
-            equation = Regex.Replace(equation, @"(\d+)\.\s", "$1 ");
-            
-            if (equation.Length > 10)
-                equationBox.FontSize = 18;
-
-            if (!append)
-                equationBox.Text = equation;
-            else
-                equationBox.Text += equation;
-        }
-
-        /// <summary>
-        /// Обновляет текст метки памяти значением в переменной памяти
-        /// </summary>
-        private void updateMemoryLabel()
-        {
-            memoryLabel.Content = memory.ToString();
-            if (memoryLabel.Content.ToString().Length > maxMemoryLabelLength)
-                memoryLabel.Content = memoryLabel.Content.ToString().Substring(0, 5) + "...";
-        }
-
-        /// <summary>
-        /// Разбирает текст в текстовом поле в тип данных double и возвращает его
-        /// </summary>
-        private double getNumber()
-        {
-            double number = double.Parse(resultBox.Text);
-            return number;
-        }
-
-        /// <summary>
-        /// Устанавливает размер шрифта поля результата на значение defaultSize
-        /// </summary>
-        private void resetFontSize()
-        {
-            resultBox.FontSize = defaultFontSize;
-        }
-
-        private int add(int num1, int num2)
-        {
-            int res = 0, carry = 0;
-            try
-            {
-                res = num1 ^ num2;
-            }
-            catch (Exception)
-            {
-                if (!ones)
-                    MessageBox.Show("Отрицательное число!");
-                ones = true;
-                return 0;
-            }
-            carry = (num1 & num2) << 1;
-            while (carry != 0)
-            {
-                int tmp = res;
-                res = res ^ carry;
-                carry = (tmp & carry) << 1;
-            }
-            ones = false;
-            return res;
-        }
-
-        // Находим противоположное число n
-        // ~: побитовое отрицание
-        // добавить: добавить операцию, добавить один к последнему биту
-        int negtive(int n)
-        {
-            return add(~n, 1);
-        }
-
-        int subtraction(int a, int b)
-        {
-            // Добавить противоположный номер вычитаемого числа
-            return add(a, negtive(b));
-        }
-
-        // Удалить знаковый бит
-        int getSign(int n)
-        {
-            return n >> 31;
-        }
-
-        // Находим абсолютное значение n
-        int Positive(int n)
-        {
-            return (getSign(n) & 1) != 0 ? negtive(n) : n;
-        }
-
-        int Multiply(int a, int b)
-        {
-            a = Positive(a);
-            b = Positive(b);
-            int res = 0;
-            while (b != 0)
-            {
-                // Когда соответствующий бит b равен 1, нужно только добавить
-                if ((b & 1) != 0)
-                    res = add(res, a);
-                a = a << 1; // сдвиг влево
-                b = b >> 1; // b сдвиг вправо
-            }
-            return res;
-        }
-
-        int Divide(int a, int b)
-        {
-            // Делитель не может быть 0
-            if (b == 0)
-                MessageBox.Show("Делитель не может быть нулевым");
-
-            a = Positive(a);
-            b = Positive(b);
-
-            int res = 0;
-            while (a >= b)
-            {
-                res = add(res, 1);
-                a = subtraction(a, b);
-            }
-            return res;
-        }
-
-
-        /// <summary>
-        /// Вычисляет результат, решая предыдущийТекст и текущий текст в результате
-        /// поле с операндом в currentOperation
-        /// </summary>
-        private void calculateResult()
-        {
-            if (currentOperation == operations.NULL)
-                return;
-
-            string result;
-
-            if (click)
-            {
-                double a = double.Parse(previousText); // первый операнд
-                double b = double.Parse(resultBox.Text); // второй операнд
-                double resultDecimal;
-
-                switch (currentOperation)
-                {
-                    case operations.DIVISION:
-                        resultDecimal = a / b;
-                        break;
-                    case operations.MULTIPLICATION:
-                        resultDecimal = a * b;
-                        break;
-                    case operations.ADDITION:
-                        resultDecimal = a + b;
-                        break;
-                    case operations.SUBTRACTION:
-                        resultDecimal = a - b;
-                        break;
-                    case operations.POWER:
-                        resultDecimal = Math.Pow(a, b);
-                        break;
-                    default:
-                        return;
-                }
-                result = resultDecimal.ToString();
-            }
-            else
-            {
-                int a = Convert.ToInt32(previousText, 2); // первый операнд в двоичном формате
-                int b = Convert.ToInt32(resultBox.Text, 2); // второй операнд в двоичном формате
-
-                switch (currentOperation)
-                {
-                    case operations.BINARY_DIVISION:
-                        result = Convert.ToString(Divide(a, b), 2);
-                        break;
-                    case operations.BINARY_MULTIPLICATION:
-                        result = Convert.ToString(Multiply(a, b), 2);
-                        break;
-                    case operations.BINARY_ADDITION:
-                        result = Convert.ToString(add(a, b), 2);
-                        break;
-                    case operations.BINARY_SUBTRACTION:
-                        result = Convert.ToString(subtraction(a, b), 2);
-                        break;
-                    default:
-                        return;
-                }
-            }
-
-            if (errors.Contains(resultBox.Text))
-                return;
-
-            operationCheck = false;
-            previousText = null;
-            string equation;
-            // Если во время выполнения математической операции не была нажата кнопка функции, то в окне уравнения будет текст с.
-            // формат <оператив a> <операция> <оператив b как число> else <оператив a> <операция> <функция>(<оператив b>)
-            if (!functionCheck)
-                equation = equationBox.Text + resultBox.Text;
-            else
-            {
-                equation = equationBox.Text;
-                functionCheck = false;
-            }
-            updateEquationBox(equation);
-            showText(result);
-            currentOperation = operations.NULL;
-            isResult = true;
-        }
-
-        /// <summary>
-        /// Добавляет нажатую цифру к тексту в текстовом поле.
-        /// Если была выбрана текущая операция, то значение текстового поля сначала присваивается переменной previousText, а затем новый текст 
-        /// добавляется в текстовое поле после усечения предыдущего текста
-        /// </summary>
-        private void numberClick(object sender, RoutedEventArgs e)
-        {
-            isResult = false;
-            Button button = (Button)sender;
-
-            if (resultBox.Text == "0" || errors.Contains(resultBox.Text))
-                resultBox.Clear();
-
-            string text;
-
-            if (clearNext)
-            {
-                resetFontSize();
-                text = button.Content.ToString();
-                isOldText = false;
-            }
-            else
-                text = resultBox.Text + button.Content.ToString();
-
-            if (!operationCheck && equationBox.Text != "")
-                updateEquationBox("");
-            showText(text, false);
-        }
-
-        /// <summary>
-        /// Изменяет текущую единицу измерения угла. Также служит для перевода из 2-ой в 16-ю в бин. моде
-        /// </summary>
-        private void angle_unit_button_Click(object sender, RoutedEventArgs e)
-        {
-            if (click)
-            {
-                List<Angles.units> units = new List<Angles.units>()
-            {
-                Angles.units.RADIANS,
-                Angles.units.DEGREES,
-                Angles.units.GRADIANS
+                two_button, three_button, four_button, five_button, six_button,
+                seven_button, eight_button, nine_button
             };
 
-                Button button = (Button)sender;
-                angleUnit = units.ElementAtOrDefault(units.IndexOf(angleUnit) + 1);
-                button.Content = angleUnitSymbols[angleUnit];
-            }
-            else
+            _disabledInProgrammer = new List<Button>
             {
-                if (errors.Contains(resultBox.Text))
-                    return;
-
-                double number = getNumber();
-                string buttonText = Convert.ToInt32(number).ToString();
-                // Переводим из двоичной системы счисления в восьмеричную.
-                int decimalNumber = Convert.ToInt32(buttonText, 2);
-                string octalString = Convert.ToString(decimalNumber, 8);
-                showText(octalString);
-            }
-
-        }
-
-        /// <summary>
-        /// Изменяет режим тригонометрических функций на нормальный, гиперболический или арк. Также служит для перевода из 2-ой в 8-ю в бин. моде
-        /// </summary>
-        private void trig_mode_button_Click(object sender, RoutedEventArgs e)
-        {
-            if (click)
-            {
-                List<trigModes> modes = new List<trigModes>()
-            {
-                trigModes.STANDARD,
-                trigModes.ARC,
-                trigModes.HYPERBOLIC
+                decimal_button, sin_button, cos_button, tan_button, pi_button,
+                e_button, log_button, nlog_button, sqrt_button, power_button,
+                fact_button, negate_button, madd_button, msub_button,
+                mr_button, mc_button
             };
 
-                Button button = (Button)sender;
-                currentTrigMode = modes.ElementAtOrDefault(modes.IndexOf(currentTrigMode) + 1);
-                button.Content = trigModeSymbols[currentTrigMode];
+            UpdateMemoryLabel();
+            ApplyMode();
+        }
 
-                if (currentTrigMode == trigModes.STANDARD)
+        private void DigitButton_Click(object sender, RoutedEventArgs e)
+        {
+            Button button = sender as Button;
+            if (button == null)
+                return;
+
+            string digit = button.Content.ToString();
+            if (_mode == CalculatorMode.Programmer && digit != "0" && digit != "1")
+                return;
+
+            string current = resultBox.Text;
+
+            if (_clearOnNextDigit || _justEvaluated)
+            {
+                current = string.Empty;
+                _clearOnNextDigit = false;
+                _justEvaluated = false;
+            }
+            else if (current == "0")
+            {
+                current = string.Empty;
+            }
+            else if (current == "-0")
+            {
+                current = "-";
+            }
+
+            string newText = current + digit;
+            if (string.IsNullOrEmpty(newText))
+                newText = "0";
+            else if (newText == "-")
+                newText = "-0";
+
+            SetDisplay(newText);
+            _isTypingNumber = true;
+        }
+
+        private void DecimalButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mode == CalculatorMode.Programmer)
+                return;
+
+            string current = resultBox.Text;
+            if (_clearOnNextDigit || _justEvaluated)
+            {
+                current = "0";
+                _clearOnNextDigit = false;
+                _justEvaluated = false;
+            }
+
+            if (!current.Contains(_decimalSeparator))
+            {
+                if (current == string.Empty)
+                    current = "0";
+
+                current += _decimalSeparator;
+                SetDisplay(current);
+                _isTypingNumber = true;
+            }
+        }
+
+        private void BinaryOperator_Click(object sender, RoutedEventArgs e)
+        {
+            Button button = sender as Button;
+            if (button == null || button.Tag == null)
+                return;
+
+            BinaryOperation operation = GetOperation(button.Tag.ToString());
+
+            if (_mode == CalculatorMode.Programmer)
+            {
+                if (operation == BinaryOperation.Power)
                 {
-                    sin_button.Content = "sin";
-                    cos_button.Content = "cos";
-                    tan_button.Content = "tan";
+                    MessageBox.Show("Возведение в степень недоступно в двоичном режиме", "Калькулятор", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
                 }
 
-                if (currentTrigMode == trigModes.HYPERBOLIC)
-                {
-                    sin_button.Content = "sinh";
-                    cos_button.Content = "cosh";
-                    tan_button.Content = "tanh";
-                }
-
-                if (currentTrigMode == trigModes.ARC)
-                {
-                    sin_button.Content = "asin";
-                    cos_button.Content = "acos";
-                    tan_button.Content = "atan";
-                }
+                PrepareProgrammerOperation(operation);
             }
             else
             {
-                if (errors.Contains(resultBox.Text))
-                    return;
-
-                double number = getNumber();
-                string buttonText = Convert.ToInt32(number).ToString();
-                // Переводим из двоичной системы счисления в восьмеричную.
-                int decimalNumber = Convert.ToInt32(buttonText, 2);
-                string octalString = Convert.ToString(decimalNumber, 16);
-                resultBox.Text = octalString.ToUpper();
+                PrepareStandardOperation(operation);
             }
-        }
-
-        /// <summary>
-        /// Функция для работы с нажатиями функциональных кнопок
-        /// </summary>
-        private void function(object sender, RoutedEventArgs e)
-        {
-            if (errors.Contains(resultBox.Text))
-                return;
-            
-            Button button = (Button)sender;
-            string buttonText = button.Content.ToString();
-            double number = getNumber();
-            string equation = "";
-            string result = "";
-            switch (buttonText)
-            {
-                case "!":
-                    if (number < 0 || number.ToString().Contains("."))
-                    {
-                        showError(INVALID_INPUT);
-                        return;
-                    }
-
-                    if (number > 3248)
-                    {
-                        showError(OVERFLOW);
-                        return;
-                    }
-                    double res = 1;
-                    if (number == 1 || number == 0)
-                        result = res.ToString();
-                    else
-                    {
-                        for (int i = 2; i <= number; i++)
-                        {
-                            res *= i;
-                        }
-                    }
-                    equation = "fact(" + number.ToString() + ")";
-                    result = res.ToString();
-                    break;
-
-                case "ln":
-                    equation = "ln(" + number + ")";
-                    result = Math.Log(number).ToString();
-                    break;
-
-                case "log":
-                    equation = "log(" + number + ")";
-                    result = Math.Log10(number).ToString();
-                    break;
-
-                case "√":
-                    equation = "√(" + number + ")";
-                    result = Math.Sqrt(number).ToString();
-                    break;
-
-                case "-n":
-                    equation = "negate(" + number + ")";
-                    result = decimal.Negate((decimal)number).ToString();
-                    break;
-            }
-
-            if (operationCheck)
-            {
-                equation = equationBox.Text + equation;
-                functionCheck = true;
-            }
-
-            updateEquationBox(equation);
-            showText(result);
-        }
-
-        /// <summary>
-        /// Функция для работы с нажатиями кнопок тригонометрических функций
-        /// </summary>
-        private void trigFunction(object sender, RoutedEventArgs e)
-        {
-            if (errors.Contains(resultBox.Text))
-                return;
-            
-            Button button = (Button)sender;
-            string buttonText = button.Content.ToString();
-            string equation = "";
-            string result = "";
-            double number = getNumber();
-
-            switch (currentTrigMode)
-            {
-                // Стандартные функции
-                case trigModes.STANDARD:
-                    double radianAngle = Angles.Converter.radians(number, angleUnit);
-                    switch (buttonText)
-                    {
-                        case "sin":
-                            equation = "sin(" + number.ToString() + ")";
-                            result = Math.Sin(radianAngle).ToString();
-                            break;
-
-                        case "cos":
-                            equation = "cos(" + number.ToString() + ")";
-                            result = Math.Cos(radianAngle).ToString();
-                            break;
-
-                        case "tan":
-                            equation = "tan(" + number.ToString() + ")";
-                            result = Math.Tan(radianAngle).ToString();
-                            break;
-                    }
-                    break;
-
-                // Гиперболические функции
-                case trigModes.HYPERBOLIC:
-                    switch(buttonText)
-                    {
-                        case "sinh":
-                            equation = "sinh(" + number + ")";
-                            result = Math.Sinh(number).ToString();
-                            break;
-
-                        case "cosh":
-                            equation = "cosh(" + number + ")";
-                            result = Math.Cosh(number).ToString();
-                            break;
-
-                        case "tanh":
-                            equation = "tanh(" + number + ")";
-                            result = Math.Tanh(number).ToString();
-                            break;
-                    }
-                    break;
-
-                // Арк функции
-                case trigModes.ARC:
-                    switch (buttonText)
-                    {
-                        case "asin":
-                            equation = "asin(" + number + ")";
-                            result = Math.Asin(number).ToString();
-                            break;
-
-                        case "acos":
-                            equation = "acos(" + number + ")";
-                            result = Math.Acos(number).ToString();
-                            break;
-
-                        case "atan":
-                            equation = "atan(" + number + ")";
-                            result = Math.Atan(number).ToString();
-                            break;
-                    }
-                    break;
-            }
-
-            // Необходимо преобразовать результат в заданную единицу измерения угла, если используются триггерные функции дуги
-            if (currentTrigMode == trigModes.ARC)
-            {
-                switch(angleUnit)
-                {
-                    case Angles.units.DEGREES:
-                        result = Angles.Converter.degrees(double.Parse(result), Angles.units.RADIANS).ToString();
-                        break;
-                    case Angles.units.GRADIANS:
-                        result = Angles.Converter.gradians(double.Parse(result), Angles.units.RADIANS).ToString();
-                        break;
-                    default:  // 'Результат' по умолчанию указывается в радианах
-                        break;
-                }
-            }
-
-            if (operationCheck)
-            {
-                equation = equationBox.Text + equation;
-                functionCheck = true;
-            }
-
-            updateEquationBox(equation);
-            showText(result);
-        }
-
-        /// <summary>
-        /// Функция для работы с кликами функций с двойным операндом
-        /// </summary>
-        private void doubleOperandFunction(object sender, RoutedEventArgs e)
-        {
-            if (errors.Contains(resultBox.Text))
-                return;
-
-            if (operationCheck && !isOldText)
-                calculateResult();
-
-            Button button = (Button)sender;
-
-            operationCheck = true;
-            previousText = resultBox.Text;
-            string buttonText = button.Content.ToString();
-            string equation = previousText + " " + buttonText + " ";
-            switch (buttonText)
-            {
-                case "/":
-                    currentOperation = !click ? operations.BINARY_DIVISION : operations.DIVISION;
-                    break;
-                case "x":
-                    currentOperation = !click ? operations.BINARY_MULTIPLICATION : operations.MULTIPLICATION;
-                    break;
-                case "-":
-                    currentOperation = !click ? operations.BINARY_SUBTRACTION : operations.SUBTRACTION;
-                    break;
-                case "+":
-                    currentOperation = !click ? operations.BINARY_ADDITION : operations.ADDITION;
-                    break;
-                case "^":
-                    if (!click)
-                    {
-                        MessageBox.Show("Работа с ^ недоступна в двоичном режиме");
-                        return;
-                    }
-                    currentOperation = operations.POWER;
-                    break;
-            }
-            updateEquationBox(equation);
-            resetFontSize();
-            showText(resultBox.Text);
-            isOldText = true;
-        }
-
-        /// <summary>
-        /// Добавляет десятичную точку к числу в поле результата по щелчку,
-        /// если число уже имеет десятичную точку, то никаких действий не предпринимается
-        /// </summary>
-        private void decimal_button_Click(object sender, RoutedEventArgs e)
-        {
-            if (!resultBox.Text.Contains("."))
-            {
-                string text = resultBox.Text += ",";
-                showText(text, false);
-            }
-        }
-
-        private void pi_button_Click(object sender, RoutedEventArgs e)
-        {
-            if (!operationCheck)
-                updateEquationBox("");
-            showText(Math.PI.ToString());
-            isResult = true; // Константы не могут быть изменены
-        }
-
-        private void e_button_Click(object sender, RoutedEventArgs e)
-        {
-            if (!operationCheck)
-                updateEquationBox("");
-            double number = getNumber();
-            showText(Math.Exp(number).ToString());
-            isResult = true; // Константы не могут быть изменены
-        }
-
-        private void madd_button_Click(object sender, RoutedEventArgs e)
-        {
-            if (errors.Contains(resultBox.Text))
-                return;
-            memory += getNumber();
-            updateMemoryLabel();
-        }
-
-        private void msub_button_Click(object sender, RoutedEventArgs e)
-        {
-            if (errors.Contains(resultBox.Text))
-                return;
-            memory -= getNumber();
-            updateMemoryLabel();
-        }
-
-        private void mc_button_Click(object sender, RoutedEventArgs e)
-        {
-            memory = 0;
-            updateMemoryLabel();
-        }
-
-        private void mr_button_Click(object sender, RoutedEventArgs e)
-        {
-            showText(memory.ToString());
-            if (!operationCheck)
-                updateEquationBox("");
-        }
-
-        private void clear_button_Click(object sender, RoutedEventArgs e)
-        {
-            resultBox.Text = "0";
-            operationCheck = false;
-            previousText = null;
-            updateEquationBox("");
-            resetFontSize();
-        }
-
-        private void clr_entry_button_Click(object sender, RoutedEventArgs e)
-        {
-            resultBox.Text = "0";
-            resetFontSize();
         }
 
         private void equals_button_Click(object sender, RoutedEventArgs e)
         {
-            calculateResult();
+            if (_mode == CalculatorMode.Programmer)
+                EvaluateProgrammer();
+            else
+                EvaluateStandard();
         }
 
-        // Копирование
-        private void copy_button_Click(object sender, RoutedEventArgs e)
+        private void UnaryFunction_Click(object sender, RoutedEventArgs e)
         {
-            if (errors.Contains(resultBox.Text))
+            Button button = sender as Button;
+            if (button == null || button.Tag == null)
                 return;
 
-            Clipboard.SetData(DataFormats.UnicodeText, resultBox.Text);
-        }
-        
-        // Вставка
-        private void paste_button_Click(object sender, RoutedEventArgs e)
-        {
-            object clipboardData = Clipboard.GetData(DataFormats.UnicodeText);
-            if (clipboardData != null)
+            string tag = button.Tag.ToString();
+
+            if (tag == "Negate")
             {
-                string data = clipboardData.ToString();
-                showText(data.ToString());
+                ToggleSign();
+                return;
+            }
+
+            double number;
+            if (!TryGetDisplayValue(out number))
+            {
+                ShowError(InvalidInputMessage);
+                return;
+            }
+
+            if (_mode == CalculatorMode.Programmer)
+                return;
+
+            double result;
+            string equation;
+
+            try
+            {
+                switch (tag)
+                {
+                    case "Sqrt":
+                        if (number < 0)
+                            throw new InvalidOperationException();
+                        result = Math.Sqrt(number);
+                        equation = "√(" + FormatNumber(number) + ")";
+                        break;
+                    case "Factorial":
+                        if (number < 0 || Math.Abs(number - Math.Round(number)) > 1e-10)
+                            throw new InvalidOperationException();
+                        int integer = (int)Math.Round(number);
+                        if (integer > FactorialLimit)
+                            throw new OverflowException();
+                        result = Factorial(integer);
+                        equation = "fact(" + FormatNumber(number) + ")";
+                        break;
+                    case "Ln":
+                        if (number <= 0)
+                            throw new InvalidOperationException();
+                        result = Math.Log(number);
+                        equation = "ln(" + FormatNumber(number) + ")";
+                        break;
+                    case "Log10":
+                        if (number <= 0)
+                            throw new InvalidOperationException();
+                        result = Math.Log10(number);
+                        equation = "log(" + FormatNumber(number) + ")";
+                        break;
+                    default:
+                        return;
+                }
+            }
+            catch (OverflowException)
+            {
+                ShowError(OverflowMessage);
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                ShowError(InvalidInputMessage);
+                return;
+            }
+
+            if (_pendingOperation.HasValue && _leftOperand.HasValue)
+                UpdateEquation(_pendingEquationPrefix + equation);
+            else
+                UpdateEquation(equation);
+
+            DisplayResult(result);
+        }
+
+        private void TrigFunction_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mode == CalculatorMode.Programmer)
+                return;
+
+            Button button = sender as Button;
+            if (button == null || button.Tag == null)
+                return;
+
+            double number;
+            if (!TryGetDisplayValue(out number))
+            {
+                ShowError(InvalidInputMessage);
+                return;
+            }
+
+            string tag = button.Tag.ToString();
+            double result = double.NaN;
+            string equation = string.Empty;
+
+            switch (_currentTrigMode)
+            {
+                case TrigMode.Standard:
+                    double radians = Angles.Converter.radians(number, _angleUnit);
+                    switch (tag)
+                    {
+                        case "Sin":
+                            result = Math.Sin(radians);
+                            equation = "sin(" + FormatNumber(number) + ")";
+                            break;
+                        case "Cos":
+                            result = Math.Cos(radians);
+                            equation = "cos(" + FormatNumber(number) + ")";
+                            break;
+                        case "Tan":
+                            result = Math.Tan(radians);
+                            equation = "tan(" + FormatNumber(number) + ")";
+                            break;
+                    }
+                    break;
+                case TrigMode.Hyperbolic:
+                    switch (tag)
+                    {
+                        case "Sin":
+                            result = Math.Sinh(number);
+                            equation = "sinh(" + FormatNumber(number) + ")";
+                            break;
+                        case "Cos":
+                            result = Math.Cosh(number);
+                            equation = "cosh(" + FormatNumber(number) + ")";
+                            break;
+                        case "Tan":
+                            result = Math.Tanh(number);
+                            equation = "tanh(" + FormatNumber(number) + ")";
+                            break;
+                    }
+                    break;
+                case TrigMode.Arc:
+                    switch (tag)
+                    {
+                        case "Sin":
+                            result = Math.Asin(number);
+                            equation = "asin(" + FormatNumber(number) + ")";
+                            break;
+                        case "Cos":
+                            result = Math.Acos(number);
+                            equation = "acos(" + FormatNumber(number) + ")";
+                            break;
+                        case "Tan":
+                            result = Math.Atan(number);
+                            equation = "atan(" + FormatNumber(number) + ")";
+                            break;
+                    }
+
+                    if (!double.IsNaN(result))
+                    {
+                        if (_angleUnit == Angles.units.DEGREES)
+                            result = Angles.Converter.degrees(result, Angles.units.RADIANS);
+                        else if (_angleUnit == Angles.units.GRADIANS)
+                            result = Angles.Converter.gradians(result, Angles.units.RADIANS);
+                    }
+                    break;
+            }
+
+            if (double.IsNaN(result) || double.IsInfinity(result))
+            {
+                ShowError(NotANumberMessage);
+                return;
+            }
+
+            if (_pendingOperation.HasValue && _leftOperand.HasValue)
+                UpdateEquation(_pendingEquationPrefix + equation);
+            else
+                UpdateEquation(equation);
+
+            DisplayResult(result);
+        }
+
+        private void PrepareStandardOperation(BinaryOperation operation)
+        {
+            double current;
+            if (!TryGetDisplayValue(out current))
+            {
+                ShowError(InvalidInputMessage);
+                return;
+            }
+
+            if (_pendingOperation.HasValue && _leftOperand.HasValue && !_clearOnNextDigit && !_justEvaluated)
+            {
+                double intermediate;
+                if (!ExecuteStandard(_leftOperand.Value, current, _pendingOperation.Value, out intermediate))
+                    return;
+
+                SetDisplay(FormatNumber(intermediate));
+                _leftOperand = intermediate;
             }
             else
-                return;
+            {
+                _leftOperand = current;
+            }
+
+            _pendingOperation = operation;
+            _pendingEquationPrefix = FormatNumber(_leftOperand.Value) + " " + GetOperationSymbol(operation) + " ";
+            UpdateEquation(_pendingEquationPrefix);
+
+            _clearOnNextDigit = true;
+            _justEvaluated = false;
+            _isTypingNumber = false;
         }
 
-        /// <summary>
-        /// Кнопка возврата назад
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        private void PrepareProgrammerOperation(BinaryOperation operation)
+        {
+            long current;
+            if (!TryGetBinaryValue(resultBox.Text, out current))
+                return;
+
+            if (_pendingOperation.HasValue && _binaryLeftOperand.HasValue && !_clearOnNextDigit && !_justEvaluated)
+            {
+                long intermediate;
+                if (!ExecuteProgrammer(_binaryLeftOperand.Value, current, _pendingOperation.Value, out intermediate))
+                    return;
+
+                SetDisplay(Convert.ToString(intermediate, 2));
+                _binaryLeftOperand = intermediate;
+            }
+            else
+            {
+                _binaryLeftOperand = current;
+            }
+
+            _pendingOperation = operation;
+            _pendingEquationPrefix = Convert.ToString(_binaryLeftOperand.Value, 2) + " " + GetOperationSymbol(operation) + " ";
+            UpdateEquation(_pendingEquationPrefix);
+
+            _clearOnNextDigit = true;
+            _justEvaluated = false;
+            _isTypingNumber = false;
+        }
+
+        private void EvaluateStandard()
+        {
+            if (!_pendingOperation.HasValue || !_leftOperand.HasValue)
+                return;
+
+            double right;
+            if (!TryGetDisplayValue(out right))
+            {
+                ShowError(InvalidInputMessage);
+                return;
+            }
+
+            double result;
+            if (!ExecuteStandard(_leftOperand.Value, right, _pendingOperation.Value, out result))
+                return;
+
+            string equation = equationBox.Text;
+            if (string.IsNullOrWhiteSpace(equation) || equation == _pendingEquationPrefix)
+                equation = _pendingEquationPrefix + FormatNumber(right);
+
+            UpdateEquation(equation + " =");
+            DisplayResult(result);
+
+            _leftOperand = result;
+            _pendingOperation = null;
+            _pendingEquationPrefix = string.Empty;
+        }
+
+        private void EvaluateProgrammer()
+        {
+            if (!_pendingOperation.HasValue || !_binaryLeftOperand.HasValue)
+                return;
+
+            long right;
+            if (!TryGetBinaryValue(resultBox.Text, out right))
+                return;
+
+            long result;
+            if (!ExecuteProgrammer(_binaryLeftOperand.Value, right, _pendingOperation.Value, out result))
+                return;
+
+            string rightText = Convert.ToString(right, 2);
+            string equation = equationBox.Text;
+            if (string.IsNullOrWhiteSpace(equation) || equation == _pendingEquationPrefix)
+                equation = _pendingEquationPrefix + rightText;
+
+            UpdateEquation(equation + " =");
+            DisplayBinaryResult(result);
+
+            _binaryLeftOperand = result;
+            _pendingOperation = null;
+            _pendingEquationPrefix = string.Empty;
+        }
+
+        private bool ExecuteStandard(double left, double right, BinaryOperation operation, out double result)
+        {
+            result = double.NaN;
+            try
+            {
+                switch (operation)
+                {
+                    case BinaryOperation.Add:
+                        result = left + right;
+                        break;
+                    case BinaryOperation.Subtract:
+                        result = left - right;
+                        break;
+                    case BinaryOperation.Multiply:
+                        result = left * right;
+                        break;
+                    case BinaryOperation.Divide:
+                        if (right == 0)
+                            throw new DivideByZeroException();
+                        result = left / right;
+                        break;
+                    case BinaryOperation.Power:
+                        result = Math.Pow(left, right);
+                        break;
+                }
+
+                if (double.IsInfinity(result) || double.IsNaN(result))
+                    throw new OverflowException();
+            }
+            catch (DivideByZeroException)
+            {
+                ShowError(DivideByZeroMessage);
+                return false;
+            }
+            catch (OverflowException)
+            {
+                ShowError(OverflowMessage);
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool ExecuteProgrammer(long left, long right, BinaryOperation operation, out long result)
+        {
+            result = 0;
+            try
+            {
+                switch (operation)
+                {
+                    case BinaryOperation.Add:
+                        result = checked(left + right);
+                        break;
+                    case BinaryOperation.Subtract:
+                        result = checked(left - right);
+                        break;
+                    case BinaryOperation.Multiply:
+                        result = checked(left * right);
+                        break;
+                    case BinaryOperation.Divide:
+                        if (right == 0)
+                            throw new DivideByZeroException();
+                        result = checked(left / right);
+                        break;
+                    default:
+                        result = left;
+                        break;
+                }
+            }
+            catch (DivideByZeroException)
+            {
+                ShowError(DivideByZeroMessage);
+                return false;
+            }
+            catch (OverflowException)
+            {
+                ShowError(OverflowMessage);
+                return false;
+            }
+
+            return true;
+        }
+
+        private void DisplayResult(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+            {
+                ShowError(OverflowMessage);
+                return;
+            }
+
+            SetDisplay(FormatNumber(value));
+            _clearOnNextDigit = true;
+            _justEvaluated = true;
+            _isTypingNumber = false;
+        }
+
+        private void DisplayBinaryResult(long value)
+        {
+            SetDisplay(Convert.ToString(value, 2));
+            _clearOnNextDigit = true;
+            _justEvaluated = true;
+            _isTypingNumber = false;
+        }
+
+        private void pi_button_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mode == CalculatorMode.Programmer)
+                return;
+
+            UpdateEquation("π");
+            DisplayResult(Math.PI);
+        }
+
+        private void e_button_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mode == CalculatorMode.Programmer)
+                return;
+
+            double number;
+            if (!TryGetDisplayValue(out number))
+            {
+                ShowError(InvalidInputMessage);
+                return;
+            }
+
+            double value = Math.Exp(number);
+            if (double.IsInfinity(value) || double.IsNaN(value))
+            {
+                ShowError(OverflowMessage);
+                return;
+            }
+
+            UpdateEquation("exp(" + FormatNumber(number) + ")");
+            DisplayResult(value);
+        }
+
+        private void MemoryButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mode == CalculatorMode.Programmer)
+                return;
+
+            Button button = sender as Button;
+            if (button == null || button.Tag == null)
+                return;
+
+            double number;
+            if (!TryGetDisplayValue(out number))
+            {
+                ShowError(InvalidInputMessage);
+                return;
+            }
+
+            switch (button.Tag.ToString())
+            {
+                case "MC":
+                    _memory = 0;
+                    break;
+                case "MR":
+                    DisplayResult(_memory);
+                    break;
+                case "MPlus":
+                    _memory += number;
+                    break;
+                case "MMinus":
+                    _memory -= number;
+                    break;
+            }
+
+            UpdateMemoryLabel();
+        }
+
+        private void UpdateMemoryLabel()
+        {
+            string value = FormatNumber(_memory);
+            if (Math.Abs(_memory) < double.Epsilon)
+                value = "0";
+
+            if (value.Length > 12)
+                value = value.Substring(0, 12) + "…";
+
+            memoryLabel.Text = "Память: " + value;
+        }
+
+        private void clear_button_Click(object sender, RoutedEventArgs e)
+        {
+            ResetState();
+            SetDisplay("0");
+            UpdateEquation(string.Empty);
+        }
+
+        private void clr_entry_button_Click(object sender, RoutedEventArgs e)
+        {
+            SetDisplay("0");
+            _clearOnNextDigit = false;
+            _justEvaluated = false;
+            _isTypingNumber = false;
+        }
+
         private void back_button_Click(object sender, RoutedEventArgs e)
         {
-            if (isResult)
+            if (_clearOnNextDigit || _justEvaluated)
+            {
+                SetDisplay("0");
+                _clearOnNextDigit = false;
+                _justEvaluated = false;
                 return;
+            }
 
-            string text;
+            string text = resultBox.Text;
+            if (text.Length <= 1 || (text.Length == 2 && text.StartsWith("-", StringComparison.Ordinal)))
+            {
+                SetDisplay("0");
+                return;
+            }
 
-            if (resultBox.Text.Length == 1)
-                text = "0";
-            else
-                text = resultBox.Text.Substring(0, resultBox.Text.Length - 1);
+            text = text.Substring(0, text.Length - 1);
+            if (text == "-")
+                text = "-0";
 
-            showText(text, false);
-
+            SetDisplay(text);
         }
 
-        /// <summary>
-        /// Кнопка для включения бинарного мода
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
+        private void copy_button_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Clipboard.SetText(resultBox.Text);
+            }
+            catch
+            {
+                MessageBox.Show("Не удалось скопировать текст", "Калькулятор", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void paste_button_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string data = Clipboard.GetText();
+                if (string.IsNullOrWhiteSpace(data))
+                    return;
+
+                string sanitized = data.Trim();
+
+                if (_mode == CalculatorMode.Programmer)
+                {
+                    sanitized = Regex.Replace(sanitized, "[^01]", string.Empty);
+                    if (string.IsNullOrEmpty(sanitized))
+                    {
+                        ShowError(InvalidInputMessage);
+                        return;
+                    }
+
+                    SetDisplay(sanitized);
+                }
+                else
+                {
+                    double value;
+                    if (!double.TryParse(sanitized, NumberStyles.Float, _culture, out value))
+                    {
+                        if (!double.TryParse(sanitized, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+                        {
+                            ShowError(InvalidInputMessage);
+                            return;
+                        }
+                    }
+
+                    SetDisplay(FormatNumber(value));
+                }
+
+                _clearOnNextDigit = true;
+                _justEvaluated = true;
+                _isTypingNumber = false;
+            }
+            catch
+            {
+                MessageBox.Show("Не удалось вставить данные", "Калькулятор", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void angle_unit_button_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mode == CalculatorMode.Programmer)
+            {
+                long value;
+                if (!TryGetBinaryValue(resultBox.Text, out value))
+                    return;
+
+                string octal = Convert.ToString(value, 8);
+                UpdateEquation("BIN→OCT(" + Convert.ToString(value, 2) + ")");
+                SetDisplay(octal);
+                _clearOnNextDigit = true;
+                _justEvaluated = true;
+                _isTypingNumber = false;
+                return;
+            }
+
+            if (_angleUnit == Angles.units.RADIANS)
+                _angleUnit = Angles.units.DEGREES;
+            else if (_angleUnit == Angles.units.DEGREES)
+                _angleUnit = Angles.units.GRADIANS;
+            else
+                _angleUnit = Angles.units.RADIANS;
+
+            UpdateAngleUnitVisuals();
+        }
+
+        private void trig_mode_button_Click(object sender, RoutedEventArgs e)
+        {
+            if (_mode == CalculatorMode.Programmer)
+            {
+                long value;
+                if (!TryGetBinaryValue(resultBox.Text, out value))
+                    return;
+
+                string hex = Convert.ToString(value, 16).ToUpperInvariant();
+                UpdateEquation("BIN→HEX(" + Convert.ToString(value, 2) + ")");
+                SetDisplay(hex);
+                _clearOnNextDigit = true;
+                _justEvaluated = true;
+                _isTypingNumber = false;
+                return;
+            }
+
+            if (_currentTrigMode == TrigMode.Standard)
+                _currentTrigMode = TrigMode.Arc;
+            else if (_currentTrigMode == TrigMode.Arc)
+                _currentTrigMode = TrigMode.Hyperbolic;
+            else
+                _currentTrigMode = TrigMode.Standard;
+
+            UpdateTrigModeVisuals();
+        }
+
         private void bin_mode_Click(object sender, RoutedEventArgs e)
         {
-            foreach (var button in new Button[] { two_button, three_button, four_button, five_button, six_button, seven_button, eight_button, nine_button,
-        negate_button, pi_button, log_button, nlog_button, e_button, tan_button, cos_button, sin_button,
-        mr_button, msub_button, mc_button, madd_button, fact_button, power_button, sqrt_button })
-            {
-                button.IsEnabled = !click;
-            }
-            if (click)
-            {
-                click = false;
-                resultBox.Text = "";
-                angle_unit_button.Content = "В 8";
-                trig_mode_button.Content = "В 16";
-            }
+            _mode = _mode == CalculatorMode.Standard ? CalculatorMode.Programmer : CalculatorMode.Standard;
+            ApplyMode();
+        }
+
+        private void ApplyMode()
+        {
+            bool programmer = _mode == CalculatorMode.Programmer;
+
+            foreach (Button button in _binaryRestrictedDigits)
+                button.IsEnabled = !programmer;
+
+            foreach (Button button in _disabledInProgrammer)
+                button.IsEnabled = !programmer;
+
+            bin_mode.Content = programmer ? "Стандарт" : "Программист";
+
+            ResetState();
+            SetDisplay("0");
+            UpdateEquation(string.Empty);
+            UpdateAngleUnitVisuals();
+            UpdateTrigModeVisuals();
+        }
+
+        private void ToggleSign()
+        {
+            string text = resultBox.Text;
+            if (text.StartsWith("-", StringComparison.Ordinal))
+                text = text.Substring(1);
+            else if (text != "0")
+                text = "-" + text;
             else
+                text = "-0";
+
+            SetDisplay(text);
+            _clearOnNextDigit = false;
+            _justEvaluated = false;
+        }
+
+        private void SetDisplay(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                text = "0";
+
+            resultBox.Text = text;
+            AdjustResultFont(text);
+        }
+
+        private void UpdateEquation(string equation)
+        {
+            equationBox.Text = equation;
+            AdjustEquationFont(equation);
+        }
+
+        private void ResetState()
+        {
+            _clearOnNextDigit = false;
+            _justEvaluated = false;
+            _isTypingNumber = false;
+            _leftOperand = null;
+            _binaryLeftOperand = null;
+            _pendingOperation = null;
+            _pendingEquationPrefix = string.Empty;
+            ResetFonts();
+        }
+
+        private void ResetFonts()
+        {
+            resultBox.FontSize = DefaultResultFontSize;
+            equationBox.FontSize = DefaultEquationFontSize;
+        }
+
+        private void AdjustResultFont(string text)
+        {
+            if (text.Length > 20)
+                resultBox.FontSize = 26;
+            else if (text.Length > 14)
+                resultBox.FontSize = 32;
+            else
+                resultBox.FontSize = DefaultResultFontSize;
+        }
+
+        private void AdjustEquationFont(string text)
+        {
+            if (text.Length > 40)
+                equationBox.FontSize = 16;
+            else if (text.Length > 24)
+                equationBox.FontSize = 18;
+            else
+                equationBox.FontSize = DefaultEquationFontSize;
+        }
+
+        private void ShowError(string message)
+        {
+            ResetState();
+            SetDisplay(message);
+            UpdateEquation(string.Empty);
+            _clearOnNextDigit = true;
+        }
+
+        private bool TryGetDisplayValue(out double number)
+        {
+            return double.TryParse(resultBox.Text, NumberStyles.Float, _culture, out number);
+        }
+
+        private bool TryGetBinaryValue(string text, out long value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(text))
             {
-                click = true;
-                angle_unit_button.Content = "RAD";
-                trig_mode_button.Content = "STD";
-                resultBox.Text = "";
+                ShowError(InvalidInputMessage);
+                return false;
+            }
+
+            try
+            {
+                value = Convert.ToInt64(text, 2);
+                return true;
+            }
+            catch
+            {
+                ShowError(InvalidInputMessage);
+                return false;
+            }
+        }
+
+        private static double Factorial(int n)
+        {
+            double result = 1;
+            for (int i = 2; i <= n; i++)
+                result *= i;
+            return result;
+        }
+
+        private string FormatNumber(double value)
+        {
+            string formatted = value.ToString("G15", _culture);
+
+            if (formatted.Contains(_decimalSeparator))
+            {
+                formatted = formatted.TrimEnd('0');
+                if (formatted.EndsWith(_decimalSeparator))
+                    formatted = formatted.Substring(0, formatted.Length - _decimalSeparator.Length);
+            }
+
+            return string.IsNullOrEmpty(formatted) ? "0" : formatted;
+        }
+
+        private static BinaryOperation GetOperation(string tag)
+        {
+            switch (tag)
+            {
+                case "Add":
+                    return BinaryOperation.Add;
+                case "Subtract":
+                    return BinaryOperation.Subtract;
+                case "Multiply":
+                    return BinaryOperation.Multiply;
+                case "Divide":
+                    return BinaryOperation.Divide;
+                case "Power":
+                    return BinaryOperation.Power;
+                default:
+                    throw new InvalidOperationException();
+            }
+        }
+
+        private static string GetOperationSymbol(BinaryOperation operation)
+        {
+            switch (operation)
+            {
+                case BinaryOperation.Add:
+                    return "+";
+                case BinaryOperation.Subtract:
+                    return "-";
+                case BinaryOperation.Multiply:
+                    return "×";
+                case BinaryOperation.Divide:
+                    return "÷";
+                case BinaryOperation.Power:
+                    return "^";
+                default:
+                    return string.Empty;
+            }
+        }
+
+        private void UpdateAngleUnitVisuals()
+        {
+            if (_mode == CalculatorMode.Programmer)
+                angle_unit_button.Content = "BIN→OCT";
+            else
+                angle_unit_button.Content = _angleUnitSymbols[_angleUnit];
+        }
+
+        private void UpdateTrigModeVisuals()
+        {
+            if (_mode == CalculatorMode.Programmer)
+            {
+                trig_mode_button.Content = "BIN→HEX";
+                sin_button.Content = "sin";
+                cos_button.Content = "cos";
+                tan_button.Content = "tan";
+                return;
+            }
+
+            trig_mode_button.Content = _trigModeSymbols[_currentTrigMode];
+
+            switch (_currentTrigMode)
+            {
+                case TrigMode.Standard:
+                    sin_button.Content = "sin";
+                    cos_button.Content = "cos";
+                    tan_button.Content = "tan";
+                    break;
+                case TrigMode.Hyperbolic:
+                    sin_button.Content = "sinh";
+                    cos_button.Content = "cosh";
+                    tan_button.Content = "tanh";
+                    break;
+                case TrigMode.Arc:
+                    sin_button.Content = "asin";
+                    cos_button.Content = "acos";
+                    tan_button.Content = "atan";
+                    break;
             }
         }
     }
